@@ -35,18 +35,19 @@ Your actual application code lives in separate repositories. The workflow checks
 
 ```
 This repo (deployment orchestrator)
-├── .github/workflows/deploy.yml    ← the pipeline
+├── .github/workflows/deploy.yml       ← the pipeline
 ├── zerops/
 │   ├── recipes/
-│   │   ├── zerops-import-dev.yml   ← lightweight config for dev environments
-│   │   ├── zerops-import-stage.yml ← mid-tier config for staging
-│   │   └── zerops-import-prod.yml  ← full config for production (HA, dedicated CPU)
+│   │   ├── zerops-import.yml.tpl      ← single template for all environments
+│   │   ├── env-dev.env                ← variable values for dev (lightweight)
+│   │   ├── env-stage.env              ← variable values for staging (mid-tier)
+│   │   └── env-prod.env               ← variable values for production (HA, dedicated CPU)
 │   └── scripts/
-│       └── zerops-api.sh           ← API helper functions (curl + jq, no CLI needed)
+│       └── zerops-api.sh              ← API helper functions (curl + jq, no CLI needed)
 
 Your app repos (separate repositories)
-├── your-org/your-app               ← e.g. Bun/Node web app, has zerops.yml
-└── your-org/your-worker            ← e.g. Python worker, has zerops.yml
+├── your-org/your-app                  ← e.g. Bun/Node web app, has zerops.yml
+└── your-org/your-worker               ← e.g. Python worker, has zerops.yml
 ```
 
 ### What Happens When You Push a Feature Branch
@@ -54,7 +55,7 @@ Your app repos (separate repositories)
 1. GitHub Actions detects the push
 2. The workflow checks out this repo + your app repos
 3. It calls the Zerops API to check if a project named `showcase-dev-{branch}` exists
-4. If not, it creates one using the dev recipe (PostgreSQL, Valkey/Redis, NATS, object storage, plus your app and worker services)
+4. If not, it renders the import template (`zerops-import.yml.tpl`) with dev values (`env-dev.env`) and creates the project (PostgreSQL, Valkey/Redis, NATS, object storage, plus your app and worker services)
 5. It waits for all infrastructure services to be ready
 6. It packages your app code into a tarball, uploads it to Zerops, and triggers a build + deploy
 7. It does the same for your worker service
@@ -90,7 +91,7 @@ If you're new to Zerops, here are the key concepts this pipeline uses:
 
 **Service (Service Stack)** — A single component within a project: a web app, a database, a cache, etc. Each service has a type (like `postgresql@17` or `bun@1.2`) and configuration for scaling, memory, and storage.
 
-**Import YAML** — A file that describes a complete project: its name and all its services. Zerops can create an entire project from this file in one API call. The recipes in `zerops/recipes/` are import YAML files.
+**Import YAML** -- A file that describes a complete project: its name and all its services. Zerops can create an entire project from this file in one API call. In this pipeline, the import YAML is generated from a template (`zerops-import.yml.tpl`) combined with per-environment variables (`env-dev.env`, `env-stage.env`, `env-prod.env`).
 
 **zerops.yml** — A file in your app's repository that tells Zerops how to build and run your application. It defines build commands, runtime commands, and which files to deploy. This is analogous to a Dockerfile, but simpler.
 
@@ -150,90 +151,131 @@ env:
 
 `ZEROPS_YAML_SETUP` must match the `setup` field in your app's `zerops.yml`. For example, if your `zerops.yml` starts with `zerops: - setup: prod`, set this to `prod`.
 
-#### 2. Customize the import recipes
+#### 2. Understand the template system
 
-The three recipe files define what services each environment gets. Edit them to match your application's needs.
+Instead of maintaining three separate recipe files (one per environment), this pipeline uses a single template with per-environment variable files. You edit services in one place and only vary the values that differ.
 
-**`zerops/recipes/zerops-import-dev.yml`** — Lightweight, for development:
+```
+zerops/recipes/
+  zerops-import.yml.tpl    <- the template (shared structure)
+  env-dev.env              <- values for dev environments
+  env-stage.env            <- values for staging
+  env-prod.env             <- values for production
+```
+
+The template uses `${VARIABLE}` placeholders that get replaced by [`envsubst`](https://www.gnu.org/software/gettext/manual/html_node/envsubst-Invocation.html) at deploy time. Lines where the value is empty are removed automatically -- this is how optional fields like `corePackage`, `cpuMode`, or `minContainers` only appear in environments that set them.
+
+#### 3. Customize the template
+
+Open `zerops/recipes/zerops-import.yml.tpl`. This defines the structure of every environment:
 
 ```yaml
 project:
-  name: <FILLED_BY_PIPELINE>     # ← don't change this, the pipeline fills it in
+  name: ${PROJECT_NAME}
+  corePackage: ${CORE_PACKAGE}
 
 services:
   - hostname: app
-    type: bun@1.2                # ← change to your app's runtime
-    enableSubdomainAccess: true  # ← gives it a public URL
-
-  - hostname: worker
-    type: python@3.12            # ← change to your worker's runtime
+    type: ${APP_TYPE}
+    enableSubdomainAccess: true
+    envSecrets:
+      CORE_MODE: ${APP_CORE_MODE}
+    minContainers: ${APP_MIN_CONTAINERS}
+    maxContainers: ${APP_MAX_CONTAINERS}
+    verticalAutoscaling:
+      cpuMode: ${APP_CPU_MODE}
+      minRam: ${APP_MIN_RAM}
+      minFreeRamGB: ${APP_MIN_FREE_RAM}
 
   - hostname: db
-    type: postgresql@17
-    mode: NON_HA                 # ← single instance (cheaper for dev)
-    priority: 10                 # ← infrastructure: created first, never redeployed
-
-  - hostname: redis
-    type: valkey@7.2
-    mode: NON_HA
+    type: ${DB_TYPE}
+    mode: ${DB_MODE}
     priority: 10
-
-  - hostname: queue
-    type: nats@2.12
-    mode: NON_HA
-    priority: 10
-
-  - hostname: storage
-    type: object-storage
-    objectStorageSize: 2         # ← 2 GB
-    objectStoragePolicy: public-read
-    priority: 10
+    # ... more services
 ```
 
-**`zerops/recipes/zerops-import-prod.yml`** — Full production config:
+Change the `hostname`, `type`, and structure to match your application. Add or remove services as needed. Use `${VARIABLE_NAME}` for any value that should differ between environments.
+
+**Important:** `${PROJECT_NAME}` is set automatically by the pipeline. Do not hardcode it.
+
+**Important:** Services with `priority: 10` are infrastructure. They are created on first deploy and never touched again. Only services without a `priority` (app, worker) receive code deployments.
+
+#### 4. Customize the env files
+
+Each env file is a simple `KEY=VALUE` list. Here's what the dev file looks like:
+
+```bash
+# env-dev.env -- lightweight, single-instance, shared CPU
+
+CORE_PACKAGE=              # empty = field is omitted from the YAML
+APP_TYPE=bun@1.2
+APP_CORE_MODE=             # empty = envSecrets block omitted
+APP_MIN_CONTAINERS=        # empty = no auto-scaling
+APP_MAX_CONTAINERS=
+APP_CPU_MODE=              # empty = shared CPU (default)
+APP_MIN_RAM=0.5
+APP_MIN_FREE_RAM=0.25
+DB_TYPE=postgresql@17
+DB_MODE=NON_HA             # single instance
+# ... etc
+```
+
+And the prod file sets everything:
+
+```bash
+# env-prod.env -- full HA, dedicated CPU, auto-scaling
+
+CORE_PACKAGE=SERIOUS       # higher resource tier
+APP_TYPE=bun@1.2
+APP_CORE_MODE=serious
+APP_MIN_CONTAINERS=2       # auto-scaling: 2-6 containers
+APP_MAX_CONTAINERS=6
+APP_CPU_MODE=DEDICATED     # dedicated CPU
+APP_MIN_RAM=1
+APP_MIN_FREE_RAM=0.5
+DB_TYPE=postgresql@17
+DB_MODE=HA                 # high availability (3 replicas)
+DB_CPU_MODE=DEDICATED
+DB_MIN_RAM=2
+# ... etc
+```
+
+The rule is simple: **set a value and it appears in the YAML; leave it empty and the entire line is removed.** Section headers like `verticalAutoscaling:` or `envSecrets:` are also removed automatically if all their children are empty.
+
+This means the generated YAML for dev is clean and minimal:
 
 ```yaml
+# What the pipeline actually sends to Zerops for a dev environment:
 project:
-  name: <FILLED_BY_PIPELINE>
-  corePackage: SERIOUS           # ← higher resource tier
+  name: showcase-dev-feat-login
 
 services:
   - hostname: app
     type: bun@1.2
     enableSubdomainAccess: true
-    minContainers: 2             # ← auto-scaling: 2-6 containers
-    maxContainers: 6
     verticalAutoscaling:
-      cpuMode: DEDICATED         # ← dedicated CPU for production
-      minRam: 1
-      minFreeRamGB: 0.5
+      minRam: 0.5
+      minFreeRamGB: 0.25
+
+  - hostname: worker
+    type: python@3.12
+    verticalAutoscaling:
+      minRam: 0.5
 
   - hostname: db
     type: postgresql@17
-    mode: HA                     # ← high availability (3 replicas)
+    mode: NON_HA
     priority: 10
-    verticalAutoscaling:
-      cpuMode: DEDICATED
-      minRam: 2
-      minFreeRamGB: 1
-
-  # ... similar patterns for other services
+  # ... etc
 ```
 
-The key differences between environments:
-- **Dev**: `NON_HA` (single instance), shared CPU, minimal RAM
-- **Stage**: `NON_HA`, shared CPU, moderate RAM
-- **Prod**: `HA` (high availability), `DEDICATED` CPU, more RAM, auto-scaling
+While prod gets the full config with HA, dedicated CPU, auto-scaling, and envSecrets -- all from the same template.
 
-**Important:** The `<FILLED_BY_PIPELINE>` placeholder in the project name is replaced automatically. Do not change it.
+#### 5. Add or remove services
 
-**Important:** Services with `priority: 10` are infrastructure services. They are created when the project is first set up and are never touched by subsequent deploys. Only services without a `priority` (app, worker) receive code deployments.
+To add a service, add it to the template and define its variables in all three env files. To remove one (e.g., no message queue), delete it from the template.
 
-#### 3. Add or remove services
-
-If your app doesn't use a message queue, remove the `queue` service from all three recipe files. If you need MySQL instead of PostgreSQL, change the `type` field. The available service types are listed in the [Zerops documentation](https://docs.zerops.io).
-
-If you have more than two app services (e.g., an API, a frontend, and a worker), add them to the recipes and duplicate the deploy steps in the workflow:
+If you have more than two app services (e.g., an API, a frontend, and a worker), add them to the template and duplicate the deploy steps in the workflow:
 
 ```yaml
 # In the workflow, after deploying app and worker:
@@ -243,7 +285,7 @@ zerops_deploy_service "$SERVICE_FOUND_ID" ./frontend ./frontend/zerops.yml "$ZER
 
 And add a checkout step for the additional repo.
 
-#### 4. Change the project naming prefix
+#### 6. Change the project naming prefix
 
 The project names (`showcase-dev-*`, `showcase-stage`, `showcase-prod`, `showcase-mr-*`) are set in the workflow's deploy steps. Search for `showcase` and replace with your project's name, e.g., `myapp-dev-*`, `myapp-stage`, etc.
 
@@ -335,9 +377,10 @@ The file `zerops/scripts/zerops-api.sh` contains all the functions that talk to 
 
 | Function | What it does |
 |---|---|
-| `zerops_ensure_project` | Find a project by name; create it if it doesn't exist. This is the core function that keeps permanent environments safe. |
+| `zerops_render_template` | Render the import template with an env file using `envsubst`. Strips empty values and orphaned section headers. Sets `RENDERED_YAML`. |
+| `zerops_ensure_project` | Find a project by name; create it if it doesn't exist. Uses `RENDERED_YAML` if set, otherwise falls back to a static import file. This is the core function that keeps permanent environments safe. |
 | `zerops_find_project` | Look up a project by name. Sets `PROJECT_FOUND_ID` if found. |
-| `zerops_import_project` | Create a new project from an import YAML file. |
+| `zerops_import_project` | Create a new project from rendered or file-based YAML. |
 | `zerops_delete_project` | Delete a project by ID. |
 | `zerops_find_service` | Look up a service within a project by hostname. |
 | `zerops_deploy_service` | Full deploy cycle: create app version, package code, upload, build, deploy, poll until complete. |
@@ -355,9 +398,9 @@ The file `zerops/scripts/zerops-api.sh` contains all the functions that talk to 
 
 If your project has only one deployable service (no separate worker), remove the worker-related lines from:
 
-1. The workflow — remove the worker checkout step and the `zerops_find_service`/`zerops_deploy_service` lines for the worker in each job
-2. The recipes — remove the `worker` service definition
-3. The workflow env — remove the `WORKER_REPO` and `WORKER_SERVICE_NAME` variables
+1. The workflow -- remove the worker checkout step and the `zerops_find_service`/`zerops_deploy_service` lines for the worker in each job
+2. The template -- remove the `worker` service block from `zerops-import.yml.tpl` and worker variables from the env files
+3. The workflow env -- remove the `WORKER_REPO` and `WORKER_SERVICE_NAME` variables
 
 ## FAQ
 
