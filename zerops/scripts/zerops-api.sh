@@ -361,6 +361,8 @@ zerops_find_service() {
 
 # zerops_get_subdomain_url PROJECT_ID SERVICE_NAME
 # Sets SUBDOMAIN_URL global.
+# The publicZone field returns the internal .prg1-zerops.zone domain.
+# The public-facing URL uses .zerops.app instead.
 zerops_get_subdomain_url() {
     local project_id="$1"
     local service_name="$2"
@@ -372,7 +374,11 @@ zerops_get_subdomain_url() {
     public_zone=$(echo "$project_json" | jq -r '.publicZone // empty')
 
     if [[ -n "$public_zone" ]]; then
-        SUBDOMAIN_URL="https://${service_name}-${public_zone}"
+        # Convert internal zone (*.prg1-zerops.zone) to public (*.prg1.zerops.app)
+        local public_host
+        public_host="${public_zone/-zerops.zone/.zerops.app}"
+        # shellcheck disable=SC2034
+        SUBDOMAIN_URL="https://${service_name}-${public_host}"
         return 0
     fi
 
