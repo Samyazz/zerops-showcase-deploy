@@ -81,8 +81,9 @@ jobs:
           PROJECT_NAME="showcase-dev-${BRANCH_SLUG}"
           echo "Project: ${PROJECT_NAME}"
 
-          zerops_ensure_project "$ZEROPS_CLIENT_ID" "$PROJECT_NAME" \
-            zerops/recipes/zerops-import-dev.yml 300
+          zerops_render_template zerops/recipes/zerops-import.yml.tpl \
+            zerops/recipes/env-dev.env "$PROJECT_NAME"
+          zerops_ensure_project "$ZEROPS_CLIENT_ID" "$PROJECT_NAME" "" 300
 
           zerops_find_service "$PROJECT_ID" "$APP_SERVICE_NAME"
           zerops_deploy_service "$SERVICE_FOUND_ID" ./app ./app/zerops.yml "$ZEROPS_YAML_SETUP"
@@ -141,8 +142,9 @@ jobs:
           PROJECT_NAME="showcase-prod"
           echo "Project: ${PROJECT_NAME}"
 
-          zerops_ensure_project "$ZEROPS_CLIENT_ID" "$PROJECT_NAME" \
-            zerops/recipes/zerops-import-prod.yml 300
+          zerops_render_template zerops/recipes/zerops-import.yml.tpl \
+            zerops/recipes/env-prod.env "$PROJECT_NAME"
+          zerops_ensure_project "$ZEROPS_CLIENT_ID" "$PROJECT_NAME" "" 300
 
           zerops_find_service "$PROJECT_ID" "$APP_SERVICE_NAME"
           zerops_deploy_service "$SERVICE_FOUND_ID" ./app ./app/zerops.yml "$ZEROPS_YAML_SETUP"
@@ -203,8 +205,9 @@ jobs:
           PROJECT_NAME="showcase-mr-${PR_NUMBER}"
           echo "Project: ${PROJECT_NAME}"
 
-          zerops_ensure_project "$ZEROPS_CLIENT_ID" "$PROJECT_NAME" \
-            zerops/recipes/zerops-import-stage.yml 300
+          zerops_render_template zerops/recipes/zerops-import.yml.tpl \
+            zerops/recipes/env-stage.env "$PROJECT_NAME"
+          zerops_ensure_project "$ZEROPS_CLIENT_ID" "$PROJECT_NAME" "" 300
 
           zerops_find_service "$PROJECT_ID" "$APP_SERVICE_NAME"
           zerops_deploy_service "$SERVICE_FOUND_ID" ./app ./app/zerops.yml "$ZEROPS_YAML_SETUP"
@@ -299,8 +302,9 @@ jobs:
           PROJECT_NAME="showcase-stage"
           echo "Project: ${PROJECT_NAME}"
 
-          zerops_ensure_project "$ZEROPS_CLIENT_ID" "$PROJECT_NAME" \
-            zerops/recipes/zerops-import-stage.yml 300
+          zerops_render_template zerops/recipes/zerops-import.yml.tpl \
+            zerops/recipes/env-stage.env "$PROJECT_NAME"
+          zerops_ensure_project "$ZEROPS_CLIENT_ID" "$PROJECT_NAME" "" 300
 
           zerops_find_service "$PROJECT_ID" "$APP_SERVICE_NAME"
           zerops_deploy_service "$SERVICE_FOUND_ID" ./app ./app/zerops.yml "$ZEROPS_YAML_SETUP"

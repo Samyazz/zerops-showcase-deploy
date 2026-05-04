@@ -41,6 +41,67 @@ log_end() { echo "::endgroup::" >&2; }
 info() { echo "[zerops] $*" >&2; }
 err() { echo "[zerops] ERROR: $*" >&2; }
 
+
+# zerops_render_template TEMPLATE_FILE ENV_FILE PROJECT_NAME
+# Renders a .tpl file using envsubst, stripping lines with empty values.
+# Sets RENDERED_YAML global.
+zerops_render_template() {
+    local template_file="$1"
+    local env_file="$2"
+    local project_name="$3"
+    RENDERED_YAML=""
+
+    if [[ ! -f "$template_file" ]]; then
+        err "Template file not found: $template_file"
+        exit 1
+    fi
+    if [[ ! -f "$env_file" ]]; then
+        err "Env file not found: $env_file"
+        exit 1
+    fi
+
+    # Load variables from env file (skip comments and blank lines)
+    local vars=""
+    while IFS='=' read -r key value; do
+        [[ -z "$key" || "$key" =~ ^[[:space:]]*# ]] && continue
+        key=$(echo "$key" | xargs)
+        export "$key=$value"
+        vars="${vars}\${${key}} "
+    done < "$env_file"
+
+    # Set project name (always required)
+    export PROJECT_NAME="$project_name"
+
+    # Render template, then clean up empty values:
+    #   1. envsubst replaces ${VAR} with values (empty string if unset)
+    #   2. grep removes lines where the value is empty ("key: " with nothing after)
+    #   3. awk removes orphaned section headers (e.g. "verticalAutoscaling:"
+    #      with no indented children remaining after the grep)
+    #   4. cat -s collapses consecutive blank lines
+    RENDERED_YAML=$(envsubst < "$template_file" \
+        | grep -v ': $' \
+        | awk '
+            /^[[:space:]]+[a-zA-Z]+:$/ {
+                header = $0
+                match($0, /^[[:space:]]+/)
+                header_indent = RLENGTH
+                getline nextline
+                match(nextline, /^[[:space:]]*/)
+                next_indent = RLENGTH
+                if (next_indent > header_indent && nextline !~ /^[[:space:]]*$/) {
+                    print header
+                    print nextline
+                } else {
+                    if (nextline !~ /^[[:space:]]*$/) print nextline
+                }
+                next
+            }
+            { print }
+        ' \
+        | cat -s)
+
+    info "Template rendered for project '${project_name}'"
+}
 # ---------------------------------------------------------------------------
 # Core API wrapper
 # ---------------------------------------------------------------------------
@@ -205,17 +266,29 @@ zerops_find_project() {
     exit 1
 }
 
-# zerops_import_project CLIENT_ID PROJECT_NAME IMPORT_YAML_FILE
+# zerops_import_project CLIENT_ID PROJECT_NAME YAML_SOURCE
 # Creates a new project from import YAML. Sets IMPORTED_PROJECT_ID.
+#
+# YAML_SOURCE is either:
+#   - Pre-rendered YAML content (if RENDERED_YAML global is set, YAML_SOURCE is ignored)
+#   - A file path to a legacy import YAML file (backward compatible)
 zerops_import_project() {
     local client_id="$1"
     local project_name="$2"
-    local import_yaml_file="$3"
+    local yaml_source="${3:-}"
 
     local yaml_content
-    yaml_content=$(cat "$import_yaml_file")
-    # Substitute the project name placeholder
-    yaml_content="${yaml_content//<FILLED_BY_PIPELINE>/$project_name}"
+    if [[ -n "${RENDERED_YAML:-}" ]]; then
+        # Use pre-rendered template (from zerops_render_template)
+        yaml_content="$RENDERED_YAML"
+    elif [[ -n "$yaml_source" && -f "$yaml_source" ]]; then
+        # Legacy: read from file and do simple placeholder substitution
+        yaml_content=$(cat "$yaml_source")
+        yaml_content="${yaml_content//<FILLED_BY_PIPELINE>/$project_name}"
+    else
+        err "No YAML content: set RENDERED_YAML or pass a valid file path"
+        exit 1
+    fi
 
     local body
     body=$(jq -n --arg yaml "$yaml_content" '{ yaml: $yaml }')
@@ -532,10 +605,13 @@ zerops_poll_process() {
 
 # zerops_ensure_project CLIENT_ID PROJECT_NAME IMPORT_YAML_FILE [WAIT_TIMEOUT]
 # Creates or finds a project. Sets PROJECT_ID global variable.
+#
+# If RENDERED_YAML is set (from zerops_render_template), it is used instead
+# of IMPORT_YAML_FILE. This allows both template-based and legacy workflows.
 zerops_ensure_project() {
     local client_id="$1"
     local project_name="$2"
-    local import_yaml_file="$3"
+    local import_yaml_file="${3:-}"
     local wait_timeout="${4:-300}"
 
     info "Ensuring project '${project_name}' exists..."
