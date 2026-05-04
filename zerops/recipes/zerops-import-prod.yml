@@ -48,3 +48,4 @@ services:
     objectStorageSize: 10
     objectStoragePolicy: public-read
     priority: 10
+# Carol: notifications feature — 20260504T111249Z
