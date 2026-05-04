@@ -36,3 +36,4 @@ services:
     objectStorageSize: 2
     objectStoragePolicy: public-read
     priority: 10
+# Bob: image-filters feature — 20260504T110434Z

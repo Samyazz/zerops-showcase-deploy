@@ -34,3 +34,4 @@ services:
     objectStorageSize: 2
     objectStoragePolicy: public-read
     priority: 10
+# Alice: user-profiles feature — 20260504T104346Z
